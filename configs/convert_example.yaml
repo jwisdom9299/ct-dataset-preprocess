@@ -1,0 +1,65 @@
+# SkyPilot configuration for DICOM to Zarr conversion
+# Usage: sky exec CLUSTER_NAME configs/convert_example.yaml
+
+resources:
+  cloud: your-cloud  # Replace with your cloud provider
+  instance_type: cpu-large
+  image_id: pytorch/pytorch:2.3.1-cuda12.1-cudnn8-devel
+
+envs:
+  # Input/Output paths
+  MANIFEST_DIR: /data/manifests
+  OUT_ROOT: /data/converted
+
+  # Storage configuration
+  STORE_TYPE: sqlite  # sqlite, dir, or zip
+
+  # Sharding configuration
+  NUM_SHARDS: "16"
+  START_SHARD: "0"  # First shard to process (inclusive)
+  END_SHARD: "7"    # Last shard to process (inclusive)
+
+  # Processing configuration
+  NUM_WORKERS: "1"
+  OVERWRITE: "0"    # Set to "1" to re-convert existing files
+  VERIFY_SLICES: "3"
+
+run: |
+  set -euo pipefail
+
+  # Install dependencies
+  python -m pip install -q pydicom zarr numcodecs numpy pylibjpeg pylibjpeg-libjpeg
+
+  echo "start_shard=$START_SHARD end_shard=$END_SHARD num_shards=$NUM_SHARDS"
+
+  # Process each shard
+  for shard_id in $(seq $START_SHARD $END_SHARD); do
+    shard_str=$(printf '%02d' $shard_id)
+    echo "convert shard=$shard_str input=${MANIFEST_DIR}/shards/series_shard_${shard_str}.csv"
+
+    export INPUT_CSV="${MANIFEST_DIR}/shards/series_shard_${shard_str}.csv"
+    export SHARD_ID=$shard_id
+    export SUMMARY_SUFFIX="shard_${shard_str}"
+
+    # Inline Python script for conversion
+    python - <<'PYTHON'
+import csv
+import hashlib
+import json
+import os
+import shutil
+import time
+from typing import Any
+
+import numpy as np
+import pydicom
+import zarr
+from numcodecs import Blosc
+
+# ... (full script content would be embedded here)
+# For production use, copy the convert_dicom_to_volume.py script
+
+PYTHON
+  done
+
+  echo "All shards completed"
