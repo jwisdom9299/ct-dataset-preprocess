@@ -7,6 +7,7 @@ Supports sharded processing for large-scale conversion jobs.
 
 Features:
 - LOCALIZER/SCOUT/TOPOGRAM image filtering (X-ray images excluded)
+- DERIVED/MPR image filtering (keeps only ORIGINAL axial slices)
 - Multiple storage backends (SQLite, DirectoryStore, ZipStore)
 - Blosc compression with configurable settings
 - Parallel processing support
@@ -106,6 +107,9 @@ ALL_TAGS = sorted(set(SERIES_TAG_CANDIDATES + SLICE_TAG_CANDIDATES))
 # Image types to skip (LOCALIZER/SCOUT images are X-ray, not CT slices)
 SKIP_IMAGE_TYPES = {"LOCALIZER", "SCOUT", "TOPOGRAM"}
 
+# Skip DERIVED images (MPR reformats) - keep only ORIGINAL slices
+SKIP_DERIVED = True  # Set to False to include DERIVED images
+
 
 def _to_json_value(value: Any) -> Any:
     """Convert DICOM value to JSON-serializable format."""
@@ -157,6 +161,24 @@ def _is_localizer(ds: pydicom.dataset.Dataset) -> bool:
         return False
     for t in img_type:
         if isinstance(t, str) and t.upper() in SKIP_IMAGE_TYPES:
+            return True
+    return False
+
+
+def _is_derived(ds: pydicom.dataset.Dataset) -> bool:
+    """Check if DICOM is a DERIVED image (MPR reformat, not original slice).
+
+    DERIVED images like Coronal/Sagittal MPR reformats have different orientations
+    and shouldn't be mixed with original axial slices.
+    """
+    if not SKIP_DERIVED:
+        return False
+    img_type = getattr(ds, "ImageType", [])
+    if not img_type:
+        return False
+    # First element of ImageType indicates ORIGINAL vs DERIVED
+    if len(img_type) > 0 and isinstance(img_type[0], str):
+        if img_type[0].upper() == "DERIVED":
             return True
     return False
 
@@ -319,6 +341,7 @@ def _process_series(row: dict[str, Any], config: dict[str, Any]) -> dict[str, An
     slice_items = []
     read_errors = 0
     localizer_skipped = 0
+    derived_skipped = 0
     shape = None
     read_start = time.time()
 
@@ -332,6 +355,11 @@ def _process_series(row: dict[str, Any], config: dict[str, Any]) -> dict[str, An
         # Skip LOCALIZER/SCOUT images (X-ray, not CT slices)
         if _is_localizer(ds):
             localizer_skipped += 1
+            continue
+
+        # Skip DERIVED images (MPR reformats like Coronal/Sagittal)
+        if _is_derived(ds):
+            derived_skipped += 1
             continue
 
         try:
@@ -387,6 +415,7 @@ def _process_series(row: dict[str, Any], config: dict[str, Any]) -> dict[str, An
             "reason": "read_failed",
             "read_errors": read_errors,
             "localizer_skipped": localizer_skipped,
+            "derived_skipped": derived_skipped,
         }
 
     slice_items.sort(key=lambda x: x["sort_key"])
@@ -464,6 +493,7 @@ def _process_series(row: dict[str, Any], config: dict[str, Any]) -> dict[str, An
             "converted_at": time.strftime("%Y-%m-%d %H:%M:%S"),
             "read_errors": read_errors,
             "localizer_skipped": localizer_skipped,
+            "derived_skipped": derived_skipped,
         }
     )
 
@@ -502,6 +532,7 @@ def _process_series(row: dict[str, Any], config: dict[str, Any]) -> dict[str, An
         "output_files": out_files,
         "read_errors": read_errors,
         "localizer_skipped": localizer_skipped,
+        "derived_skipped": derived_skipped,
         "verify_ok": series_meta.get("verify_ok"),
     }
 
@@ -643,6 +674,9 @@ def main() -> None:
             ),
             "localizer_skipped_total": sum(
                 int(row.get("localizer_skipped") or 0) for row in summary_rows
+            ),
+            "derived_skipped_total": sum(
+                int(row.get("derived_skipped") or 0) for row in summary_rows
             ),
             "output_bytes_total": sum(int(row.get("output_bytes") or 0) for row in summary_rows),
             "output_files_total": sum(int(row.get("output_files") or 0) for row in summary_rows),
