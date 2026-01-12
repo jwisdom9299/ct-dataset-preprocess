@@ -107,8 +107,8 @@ ALL_TAGS = sorted(set(SERIES_TAG_CANDIDATES + SLICE_TAG_CANDIDATES))
 # Image types to skip (LOCALIZER/SCOUT images are X-ray, not CT slices)
 SKIP_IMAGE_TYPES = {"LOCALIZER", "SCOUT", "TOPOGRAM"}
 
-# Skip DERIVED images (MPR reformats) - keep only ORIGINAL slices
-SKIP_DERIVED = True  # Set to False to include DERIVED images
+# Skip DERIVED images (MPR reformats) - set to False to include all orientations
+SKIP_DERIVED = False  # Changed: include DERIVED images (Coronal/Sagittal MPR)
 
 
 def _to_json_value(value: Any) -> Any:
@@ -291,6 +291,8 @@ def _process_series(row: dict[str, Any], config: dict[str, Any]) -> dict[str, An
     dataset = row.get("dataset") or "unknown"
     series_hash = _resolve_series_hash(series_dir, row)
     file_count = row.get("file_count")
+    # SeriesInstanceUID for filtering files within a directory
+    target_series_uid = row.get("series_uid") or ""
 
     if not series_dir:
         return {
@@ -345,12 +347,20 @@ def _process_series(row: dict[str, Any], config: dict[str, Any]) -> dict[str, An
     shape = None
     read_start = time.time()
 
+    series_uid_mismatch = 0
     for path in files:
         try:
             ds = pydicom.dcmread(path, force=True)
         except Exception:
             read_errors += 1
             continue
+
+        # Filter by SeriesInstanceUID if specified (for mixed-series directories)
+        if target_series_uid:
+            file_series_uid = getattr(ds, "SeriesInstanceUID", "")
+            if file_series_uid != target_series_uid:
+                series_uid_mismatch += 1
+                continue
 
         # Skip LOCALIZER/SCOUT images (X-ray, not CT slices)
         if _is_localizer(ds):
@@ -482,6 +492,7 @@ def _process_series(row: dict[str, Any], config: dict[str, Any]) -> dict[str, An
         {
             "dataset": dataset,
             "series_dir": series_dir,
+            "series_uid": target_series_uid,  # SeriesInstanceUID
             "series_hash": series_hash,
             "file_count": int(file_count) if file_count else len(files),
             "slice_count": z_dim,
